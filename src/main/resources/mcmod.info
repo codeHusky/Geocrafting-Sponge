@@ -1,0 +1,12 @@
+[{
+    "modid": "geocaching",
+    "name": "Geocaching",
+    "version": "0.1.0",
+    "description": "Geocaching in Minecraft.",
+    "authorList": [
+        "Loki (MikaalSky)"
+    ],
+    "dependencies": [
+
+    ]
+}]
