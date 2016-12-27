@@ -1,18 +1,29 @@
 package pw.codehusky.geocaching;
 
 import com.google.inject.Inject;
+import ninja.leaping.configurate.commented.CommentedConfigurationNode;
+import ninja.leaping.configurate.loader.ConfigurationLoader;
 import org.slf4j.Logger;
+import org.spongepowered.api.Sponge;
+import org.spongepowered.api.block.BlockTypes;
+import org.spongepowered.api.block.tileentity.TileEntity;
+import org.spongepowered.api.block.tileentity.carrier.TileEntityCarrier;
+import org.spongepowered.api.config.DefaultConfig;
 import org.spongepowered.api.entity.living.player.Player;
 import org.spongepowered.api.event.Listener;
+import org.spongepowered.api.event.block.InteractBlockEvent;
+import org.spongepowered.api.event.cause.Cause;
+import org.spongepowered.api.event.cause.NamedCause;
 import org.spongepowered.api.event.game.state.GameStartedServerEvent;
-import org.spongepowered.api.event.item.inventory.ChangeInventoryEvent;
-import org.spongepowered.api.event.item.inventory.ClickInventoryEvent;
 import org.spongepowered.api.item.inventory.Inventory;
-import org.spongepowered.api.item.inventory.ItemStack;
-import org.spongepowered.api.item.inventory.transaction.SlotTransaction;
 import org.spongepowered.api.plugin.Plugin;
 import org.spongepowered.api.plugin.PluginContainer;
+import org.spongepowered.api.scheduler.Scheduler;
+import org.spongepowered.api.scheduler.Task;
+import org.spongepowered.api.world.Location;
+import org.spongepowered.api.world.World;
 
+import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -23,60 +34,78 @@ import java.util.UUID;
 public class Geocaching {
     @Inject
     private Logger logger;
-
-    private Map<UUID,Object[]> cachers = new HashMap<>();
-
     @Inject
     private PluginContainer pC;
+    @Inject
+    @DefaultConfig(sharedRoot = false)
+    private ConfigurationLoader<CommentedConfigurationNode> privateConfig;
+
+    private Map<UUID,Object[]> cachers = new HashMap<>();
     private HashMap<Long,HashMap<UUID,HashMap<String,Boolean>>> geocacheData = new HashMap<>();
+    public Scheduler scheduler;
+    public Cause genericCause;
+
     @Listener
     public void onServerStart(GameStartedServerEvent event){
         logger.info("Geocaching v" + pC.getVersion().get() + " starting...");
         geocacheData.put(0l,new HashMap<>());
+        scheduler = Sponge.getScheduler();
+        genericCause = Cause.of(NamedCause.of("PluginContainer",pC));
     }
 
     @Listener
-    public void onInventoryChange(ChangeInventoryEvent event){
-        Player cause;
-        if(!(event.getCause().all().get(0) instanceof Player)){
-            return;
-        }else{
-            cause = (Player) event.getCause().all().get(0);
-            if(!cachers.containsKey(cause.getUniqueId())){
-                Object[] generic = {false,false,-1};
-                cachers.put(cause.getUniqueId(),generic);
-            }
-        }
-        Inventory tt = event.getTargetInventory();
-        if(tt.getName().get().contains("§a") && tt.getName().get().contains("'s Geocache")){
-            HashMap<UUID,HashMap<String,Boolean>> ourCache = geocacheData.get(0l);
-            if(!ourCache.containsKey(cause.getUniqueId())){
-                ourCache.put(cause.getUniqueId(),new HashMap<>());
-            }
-            HashMap<String,Boolean> personalProperties = ourCache.get(cause.getUniqueId());
-            if(event.getTransactions().size() > 0) {
-                SlotTransaction g = event.getTransactions().get(0);
-                Optional<ItemStack> pre = g.getSlot().peek();
-                if(pre.isPresent() && false){
-                    ItemStack ourStack = pre.get();
-                    Inventory t = g.getSlot().parent();
-                    if(t.getName().get().contains("§a") && t.getName().get().contains("'s Geocache")){
-                        logger.info("Geocache");
-                        if(t.contains(ourStack))
-                            logger.info("geo find");
-                    }else{
-                        logger.info("Player inventory");
-                        if(t.contains(ourStack))
-                            logger.info("ply find");
-                    }
-                }
+    public void geocacheInteract(InteractBlockEvent.Secondary.MainHand event){
+
+        Location<World> blk = event.getTargetBlock().getLocation().get();
+        if(blk.getBlock().getType() == BlockTypes.CHEST || false) {
+            TileEntity te = blk.getTileEntity().get();
+            Inventory inv = ((TileEntityCarrier) te).getInventory();
+            if(inv.getName().get().contains("§cCACHE#")){
+                event.setCancelled(true);
+                Task.Builder upcoming = scheduler.createTaskBuilder();
+                Player openee = (Player) event.getCause().root();
+                String cacheID =inv.getName().get().replace("§cCACHE#","");
+                updateGeocacheLocation(cacheID,event.getTargetBlock().getLocation().get());
+                upcoming.execute(() ->{
+                    openee.sendBookView(GeoLog.create(cacheID,openee,this));
+                }).delayTicks(1).submit(this);
 
             }
         }
     }
-    @Listener
-    public void onInventoryClick(ClickInventoryEvent event){
-        logger.info("woah");
-        logger.info(event.getTransactions().get(0).getSlot().parent().getName().get());
+    //public void updateGeocacheLocation(String cacheID, )
+    public void updateGeocacheLocation(String cacheID,Location<World> splenda){
+        try {
+            CommentedConfigurationNode root = privateConfig.load();
+            CommentedConfigurationNode location = root.getNode("caches",cacheID,"location");
+            location.getNode("worldUUID").setValue(splenda.getExtent().getUniqueId().toString());
+            CommentedConfigurationNode pos = location.getNode("position");
+            pos.getNode("x").setValue(splenda.getBlockX());
+            pos.getNode("y").setValue(splenda.getBlockY());
+            pos.getNode("z").setValue(splenda.getBlockZ());
+            privateConfig.save(root);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
     }
+    public Location<World> getGeocacheLocation(String cacheID) throws Exception {
+        try {
+            CommentedConfigurationNode root = privateConfig.load();
+
+            CommentedConfigurationNode unparsed = root.getNode("caches",cacheID,"location");
+            UUID worldUUID = UUID.fromString(unparsed.getNode("worldUUID").getString());
+            Optional<World> crossFingers = Sponge.getServer().getWorld(worldUUID);
+            if(!crossFingers.isPresent())
+                return null;
+            return new Location<World>(crossFingers.get()
+                    ,unparsed.getNode("position","x").getInt()
+                    ,unparsed.getNode("position","y").getInt()
+                    ,unparsed.getNode("position","z").getInt());
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+
+
 }
